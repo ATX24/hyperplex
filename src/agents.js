@@ -83,7 +83,8 @@ export async function ensureSession(host, { platform, session_ref, title, cwd, m
   if (!ref) fail(400, 'session_ref is required.');
   const existing = await one(`select * from agents where host_id = $1 and platform = $2 and session_ref = $3`, [host.id, plat, ref]);
   if (existing) {
-    return one(`update agents set title = coalesce($2, title), cwd = coalesce($3, cwd), meta = meta || $4::jsonb, retired_at = null,
+    // cwd stays the launch folder: that's where the session can be resumed from
+    return one(`update agents set title = coalesce($2, title), cwd = coalesce(cwd, $3), meta = meta || $4::jsonb, retired_at = null,
         state = case when state = 'ended' then 'idle' else state end where id = $1 returning *`,
       [existing.id, title ? String(title).slice(0, 200) : null, cwd || null, JSON.stringify(meta)]);
   }

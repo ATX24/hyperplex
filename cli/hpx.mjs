@@ -207,6 +207,8 @@ async function hook(platform) {
     return;
   }
   if (event === 'Notification') {
+    // "waiting for your input" is just idle; anything else (a permission prompt) needs a person
+    if (/waiting for (your )?input/i.test(input.message || '')) return;
     await api('PATCH', '/v1/me', { state: 'blocked', summary: clip(input.message, 300) }, { as });
     if (s.meta?.remote) await api('POST', '/v1/messages', { to: 'reply_to', kind: 'event', collapse_key: `attention:${as}`,
       body: `${label(platform)} session ${as} (${s.project || 'unknown project'}) needs attention: ${clip(input.message, 300)}. It's waiting on Dhilan's laptop.` }, { as }).catch(() => {});
