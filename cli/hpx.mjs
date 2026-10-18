@@ -319,6 +319,19 @@ function localHttp(port, { method = 'GET', path: p = '/', headers = {}, body }, 
     req.end();
   });
 }
+// pids of claude/codex/pi processes whose working folder is dir (so we never start a second copy there)
+async function agentsIn(dir, names = ['claude', 'codex', 'pi']) {
+  const { stdout } = await run('ps', ['-axo', 'pid=,command=']).catch(() => ({ stdout: '' }));
+  const pids = stdout.split('\n').map(l => /^\s*(\d+)\s+(\S+)(?:\s+(\S+))?/.exec(l)).filter(Boolean)
+    .filter(([, , exe, arg]) => names.includes(path.basename(exe)) || (/(^|\/)node$/.test(exe) && names.includes(path.basename(arg || ''))))
+    .map(m => m[1]);
+  if (!pids.length) return [];
+  const { stdout: lo } = await run('lsof', ['-a', '-d', 'cwd', '-Fpn', '-p', pids.join(',')]).catch(() => ({ stdout: '' }));
+  const out = []; let pid;
+  for (const l of lo.split('\n')) { if (l[0] === 'p') pid = Number(l.slice(1)); else if (l[0] === 'n' && path.resolve(l.slice(1)) === path.resolve(dir)) out.push(pid); }
+  return out;
+}
+const claudeTrusts = async dir => fsp.readFile(path.join(HOME, '.claude.json'), 'utf8').then(t => !!JSON.parse(t).projects?.[dir]?.hasTrustDialogAccepted).catch(() => false);
 const waitFor = async (fn, ms, every = 500) => { const until = Date.now() + ms; while (Date.now() < until) { const v = await fn(); if (v) return v; await new Promise(r => setTimeout(r, every)); } return null; };
 
 /* ------------------------------------------------------------ host daemon */
@@ -396,12 +409,13 @@ const ops = {
   async learning_open({ session }) {
     const l = pickLesson(await piLessons(60), session);
     let view = learnViews().get(l.id), how = 'already open';
-    const running = await run('ps', ['-axo', 'command=']).then(r => r.stdout.split('\n').some(c => /(^|\/)pi(\s|$)/.test(c.split(/\s+/)[0]) && c.includes(l.id.slice(0, 8)))).catch(() => false);
+    // any pi in that folder might be this session: ask it rather than starting a second copy
+    const running = !view && (await agentsIn(l.cwd, ['pi'])).length > 0;
     if (!view && running) {
       fs.mkdirSync(path.join(LEARN_DIR, 'requests'), { recursive: true });
       fs.writeFileSync(path.join(LEARN_DIR, 'requests', l.id), new Date().toISOString(), { mode: 0o600 });
       view = await waitFor(() => learnViews().get(l.id), 12_000);
-      if (!view) throw Object.assign(new Error('That lesson is open in a terminal but didn’t start its web view. Run /reload in it once, then try again.'), { status: 409 });
+      if (!view) throw Object.assign(new Error(`pi is running in ${path.basename(l.cwd)} but the lesson page didn’t come up. If that pi was started before the learn extension update, run /reload in it once, then ask again. (Not starting a second copy.)`), { status: 409 });
       how = 'started the web view in the open session';
     } else if (!view) {
       if (!l.cwd || !inRoots(l.cwd)) throw Object.assign(new Error(`${l.cwd} is outside allow_roots.`), { status: 403 });
@@ -468,7 +482,14 @@ async function deliver(s) {
   const as = s.handle, pid = s.meta?.pid, open = pid && alive(pid);
   if (open && !s.meta?.tmux_pane) return;   // open in a plain terminal: it gets the message at its next prompt (UserPromptSubmit hook)
   if (s.platform === 'pi' || s.platform === 'pi-learning') return;   // the pi extension polls for itself
-  const { messages } = await api('GET', '/v1/inbox?limit=10', undefined, { as });
+  if (!open) {
+    // reopening: never alongside another agent in that folder (it may be this very session, resumed by hand)
+    if (!s.cwd || !fs.existsSync(s.cwd) || !inRoots(s.cwd)) return;
+    if ((await agentsIn(s.cwd)).length) return;
+    if (s.platform === 'claude' && !(await claudeTrusts(s.cwd))) return;
+  }
+  // claim without acknowledging: if delivery fails, the message is offered again
+  const { messages } = await api('GET', '/v1/inbox?limit=10&ack=manual', undefined, { as });
   if (!messages.length) return;
   const text = `${fmtMessages(messages)}\n\n(Delivered through Hyperplex.)`;
   const replyTo = messages.at(-1).from;
@@ -477,10 +498,10 @@ async function deliver(s) {
     await run('tmux', ['send-keys', '-t', s.meta.tmux_pane, 'Enter']);
     console.log(new Date().toISOString(), 'typed message into', as);
   } else {
-    if (!s.cwd || !fs.existsSync(s.cwd)) throw new Error(`folder ${s.cwd} is gone`);
     const { name } = await launch(s.platform, s.cwd, text, { resume: s.session_ref, replyTo });
     console.log(new Date().toISOString(), 'reopened', as, 'in tmux', name);
   }
+  await api('POST', '/v1/inbox/ack', { ids: messages.map(m => m.id) }, { as });
   await api('PATCH', '/v1/me', { state: 'working', summary: clip(messages.at(-1).body, 300) }, { as });
 }
 // sessions whose process is gone have ended
