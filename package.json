@@ -1,0 +1,16 @@
+{
+  "name": "hyperplex",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A switchboard for personal AI agents: identities, inboxes, tools and artifacts.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "bin": { "hpx": "cli/hpx.mjs" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "pg": "8.13.1"
+  }
+}
