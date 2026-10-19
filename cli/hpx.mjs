@@ -111,6 +111,12 @@ const PARSE = {
     if (e.type === 'event_msg' && p.type === 'user_message') return { role: 'you', text: p.message, at: e.timestamp };
     if (e.type === 'event_msg' && p.type === 'agent_message') return { role: 'agent', text: p.message, tools: [], at: e.timestamp };
     if (e.type === 'response_item' && /function_call|custom_tool_call|local_shell_call/.test(p.type || '')) return { role: 'agent', text: '', tools: [p.name || p.type], at: e.timestamp };
+    // the Codex app records turns as response items instead of user_message/agent_message events
+    if (e.type === 'response_item' && p.type === 'message' && (p.role === 'user' || p.role === 'assistant')) {
+      const t = (p.content || []).filter(x => /text/.test(x.type || '')).map(x => x.text).join('\n').trim();
+      if (!t || (p.role === 'user' && /^<(environment_context|user_instructions|permissions|turn_aborted|heartbeat)/.test(t))) return null;
+      return p.role === 'user' ? { role: 'you', text: t, at: e.timestamp } : { role: 'agent', text: t, tools: [], at: e.timestamp };
+    }
     return null;
   },
   pi(e) {
