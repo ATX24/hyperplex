@@ -22,7 +22,7 @@ export default [
     run: async (a, ctx) => {
       const host = await pickHost(a.host);
       const view = await rpc.call(host, 'learning_open', { session: a.session }, { timeout: 50_000 });
-      const link = relay.create({ host, port: view.port, token: view.token });
+      const link = relay.create({ host, session: view.session_ref });
       return { url: `${ctx.base}/r/${link.id}`, expires_at: link.expires_at, topic: view.topic, session: view.session_ref?.slice(0, 8), how: view.how,
         note: 'Send this link to Dhilan only. Anything typed on that page goes into the same pi session.' };
     },

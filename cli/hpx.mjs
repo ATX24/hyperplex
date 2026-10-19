@@ -338,6 +338,17 @@ async function agentsIn(dir, names = ['claude', 'codex', 'pi']) {
   return out;
 }
 const claudeTrusts = async dir => fsp.readFile(path.join(HOME, '.claude.json'), 'utf8').then(t => !!JSON.parse(t).projects?.[dir]?.hasTrustDialogAccepted).catch(() => false);
+// the lesson server's session cookie, per run of the page (keyed by its secret token)
+const lessonCookies = new Map();
+async function lessonCookie(view) {
+  if (lessonCookies.has(view.token)) return lessonCookies.get(view.token);
+  const origin = `http://127.0.0.1:${view.port}`;
+  const r = await localHttp(view.port, { method: 'POST', path: '/api/connect', headers: { 'content-type': 'application/json', origin }, body: JSON.stringify({ token: view.token }) });
+  const cookie = [].concat(r.headers['set-cookie'] || [])[0]?.split(';')[0];
+  if (r.status !== 200 || !cookie) throw Object.assign(new Error('Couldn’t sign in to the lesson page.'), { status: 502 });
+  lessonCookies.set(view.token, cookie);
+  return cookie;
+}
 const waitFor = async (fn, ms, every = 500) => { const until = Date.now() + ms; while (Date.now() < until) { const v = await fn(); if (v) return v; await new Promise(r => setTimeout(r, every)); } return null; };
 
 /* ------------------------------------------------------------ host daemon */
@@ -434,11 +445,24 @@ const ops = {
     }
     return { port: view.port, token: view.token, topic: l.topic, session_ref: l.id, how };
   },
-  async http({ port, method, path: p, headers, body, host }) {
-    if (![...learnViews().values()].some(v => v.port === port)) throw Object.assign(new Error('That lesson page has closed. Ask for a new link.'), { status: 410 });
+  // One browser request for a lesson page. Links name the session, not one run of its page: the
+  // current page is looked up each time and this host signs in to it, so a pi restart or /reload
+  // doesn't break the link on the phone.
+  async http({ session, method, path: p, headers = {}, body }) {
     if (typeof p !== 'string' || !p.startsWith('/') || p.startsWith('//')) throw Object.assign(new Error('Bad path'), { status: 400 });
-    const r = await localHttp(port, { method, path: p, headers, body: body ? Buffer.from(body, 'base64') : undefined }, host);
-    return { status: r.status, headers: r.headers, body: r.body.toString('base64') };
+    const view = learnViews().get(session);
+    if (!view) throw Object.assign(new Error('This lesson isn’t running right now. Ask for it again (learning_open) and it will be reopened.'), { status: 410 });
+    if (p.split('?')[0] === '/api/connect') return { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"ok":true}').toString('base64') };
+    const origin = `http://127.0.0.1:${view.port}`;
+    const send = async () => {
+      const cookie = await lessonCookie(view);
+      const { cookie: _drop, origin: _o, ...rest } = headers;
+      return localHttp(view.port, { method, path: p, headers: { ...rest, cookie, ...(method !== 'GET' ? { origin } : {}) }, body: body ? Buffer.from(body, 'base64') : undefined });
+    };
+    let r = await send();
+    if (r.status === 401) { lessonCookies.delete(view.token); r = await send(); }
+    const { 'set-cookie': _sc, ...keep } = r.headers;
+    return { status: r.status, headers: keep, body: r.body.toString('base64') };
   },
 };
 
